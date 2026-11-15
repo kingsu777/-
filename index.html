@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="format-detection" content="telephone=no" />
+  <title>云上炭火摊</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #e8dcc8; overflow: hidden; touch-action: none; font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif; }
+    #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+    #ui { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+    #hint {
+      position: absolute; left: 50%; bottom: calc(10% + env(safe-area-inset-bottom));
+      transform: translateX(-50%);
+      color: #3a2e24; background: rgba(255,248,238,.78);
+      padding: 8px 14px; border-radius: 999px; font-size: 14px; letter-spacing: .04em;
+      opacity: 0; transition: opacity .45s ease;
+      text-align: center; white-space: nowrap;
+      box-shadow: 0 2px 10px rgba(60,40,20,.08);
+    }
+    #hint.show { opacity: 1; }
+    #actions {
+      position: absolute; left: 50%; bottom: calc(4% + env(safe-area-inset-bottom));
+      transform: translateX(-50%);
+      display: none; gap: 10px; pointer-events: auto;
+    }
+    #actions.show { display: flex; }
+    #actions button {
+      appearance: none; border: 0; background: rgba(255,248,238,.92);
+      color: #3a2e24; font-size: 15px; padding: 10px 16px; border-radius: 999px;
+      font-family: inherit; box-shadow: 0 2px 10px rgba(60,40,20,.12);
+    }
+    #actions button:active { transform: scale(.97); }
+    #bubble {
+      position: absolute; left: 0; top: 0; transform: translate(-50%, -120%);
+      background: rgba(255,248,238,.94); color: #3a2e24;
+      padding: 10px 16px; border-radius: 16px 16px 16px 4px;
+      font-size: 16px; letter-spacing: .04em; display: none;
+      box-shadow: 0 4px 16px rgba(60,40,20,.14); pointer-events: none; white-space: nowrap;
+    }
+    #bubble.show { display: block; }
+    #exit {
+      position: absolute; right: 14px; bottom: calc(18% + env(safe-area-inset-bottom));
+      max-width: 46%; text-align: right; color: #5a4a3a;
+      font-size: 13px; letter-spacing: .06em; line-height: 1.5;
+      background: rgba(255,248,238,.55); padding: 8px 10px; border-radius: 8px;
+      opacity: 0; pointer-events: none; transition: opacity 1.2s ease;
+    }
+    #exit.show { opacity: 1; pointer-events: auto; }
+    #panel {
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      width: min(86vw, 340px); background: #fff8ee; color: #3a2e24;
+      border-radius: 16px; padding: 22px 22px 18px; display: none;
+      pointer-events: auto; box-shadow: 0 10px 40px rgba(40,24,12,.18);
+    }
+    #panel.show { display: block; }
+    #panel h2 { margin: 0 0 14px; font-size: 16px; font-weight: 600; letter-spacing: .08em; }
+    #panel p { margin: 0 0 12px; font-size: 14px; line-height: 1.7; }
+    #panel .name { font-weight: 600; }
+    #panel .close { display: block; margin: 8px auto 0; border: 0; background: none; color: #8a7a6a; font-size: 13px; font-family: inherit; }
+    #mute {
+      position: absolute; top: calc(10px + env(safe-area-inset-top)); right: 12px;
+      width: 36px; height: 36px; border: 0; border-radius: 50%;
+      background: rgba(255,248,238,.7); color: #3a2e24; pointer-events: auto;
+      font-size: 16px; font-family: inherit;
+    }
+    #fade { position: fixed; inset: 0; background: #e8dcc8; z-index: 9; opacity: 1; transition: opacity 1.2s ease; pointer-events: none; }
+    #fade.off { opacity: 0; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="fade"></div>
+  <div id="ui">
+    <button id="mute" aria-label="声音">♪</button>
+    <div id="bubble">先点十串，不够再加</div>
+    <div id="hint">点地面走过去</div>
+    <div id="actions">
+      <button data-act="flip">翻串</button>
+      <button data-act="fan">扇风</button>
+      <button data-act="toast">碰杯</button>
+    </div>
+    <div id="exit">大直沽 · 江都路，有空来吃就行</div>
+    <div id="panel">
+      <h2>炭烤说</h2>
+      <p><span class="name">大直沽店</span><br>河东区大直沽中路146号<br>13212252543</p>
+      <p><span class="name">江都路店</span><br>河北区江都路5号<br>15510850900</p>
+      <p>12:00–24:00</p>
+      <button class="close" type="button">先这样</button>
+    </div>
+  </div>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js"
+    }
+  }
+  </script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
