@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CATS, MENU, MENU_BY_ID, formatPrice, CHAT_LINES, MANAGER_LINE, MANAGER_CHIRPS } from './menu.js';
+import { CATS, MENU, MENU_BY_ID, formatPrice, CHAT_LINES, MANAGER_LINE, MANAGER_CHIRPS, MANAGER_REPLIES, GUEST_REPLIES } from './menu.js';
 
 const canvas = document.getElementById('c');
 const hintEl = document.getElementById('hint');
@@ -10,6 +10,8 @@ const panelEl = document.getElementById('panel');
 const menuEl = document.getElementById('menu');
 const fadeEl = document.getElementById('fade');
 const muteEl = document.getElementById('mute');
+const talkEl = document.getElementById('talk');
+const talkIn = document.getElementById('talk-in');
 const tabsEl = menuEl.querySelector('.menu-tabs');
 const listEl = menuEl.querySelector('.menu-list');
 const sumEl = menuEl.querySelector('.menu-sum');
@@ -29,6 +31,8 @@ const state = {
   exitScheduled: false,
   muted: false,
   audioReady: false,
+  playerChatting: false,
+  shotCam: false,
   startedAt: performance.now(),
   seatedOnce: false,
   menuOpen: false,
@@ -1177,7 +1181,7 @@ function say(person, text, dur = 2.6, asManager = false) {
   if (!person || !text) return;
   hideBubble(person);
   const el = document.createElement('div');
-  el.className = 'speech' + (asManager ? ' manager' : '');
+  el.className = 'speech' + (asManager ? ' manager' : '') + (person === player ? ' me' : '');
   el.textContent = text;
   bubblesEl.appendChild(el);
   requestAnimationFrame(() => el.classList.add('show'));
@@ -1195,31 +1199,131 @@ function updateBubbles() {
     }
     const head = b.who.userData.head;
     if (!head) { b.el.style.display = 'none'; continue; }
+    b.who.updateMatrixWorld(true);
+    head.updateMatrixWorld(true);
     head.getWorldPosition(tmp);
-    tmp.y += 0.28;
     tmp2.copy(tmp).applyMatrix4(camera.matrixWorldInverse);
-    if (tmp2.z > -0.4) { b.el.style.display = 'none'; continue; }
+    // Small world lift, scaled by distance so foreground heads don't throw
+    // the bubble far into the background.
+    const dist = Math.max(0.4, Math.abs(tmp2.z));
+    tmp.y += Math.min(0.2, 0.06 + 0.04 * dist);
     tmp.project(camera);
-    const x = (tmp.x * 0.5 + 0.5) * innerWidth;
-    const y = (-tmp.y * 0.5 + 0.5) * innerHeight;
-    if (x < -40 || x > innerWidth + 40 || y < -20 || y > innerHeight + 20) {
+    let x = (tmp.x * 0.5 + 0.5) * innerWidth;
+    let y = (-tmp.y * 0.5 + 0.5) * innerHeight;
+    const talkReserve = (state.seated && !document.body.classList.contains('talking') ? 150 : 78)
+      + (parseInt(getComputedStyle(document.documentElement).getPropertyValue('--talk-h')) || 58);
+    const maxY = innerHeight - talkReserve;
+    const isMe = b.who === player;
+    if (!isMe && tmp2.z > -0.35) { b.el.style.display = 'none'; continue; }
+    if (!isMe && (x < -80 || x > innerWidth + 80 || y < -40 || y > innerHeight + 40)) {
       b.el.style.display = 'none';
       continue;
     }
     b.el.style.display = 'block';
     b.el.style.left = `${x}px`;
     b.el.style.top = `${y}px`;
+    const pad = 12;
+    const rect = b.el.getBoundingClientRect();
+    let dx = 0;
+    let dy = 0;
+    if (rect.left < pad) dx += pad - rect.left;
+    if (rect.right > innerWidth - pad) dx += (innerWidth - pad) - rect.right;
+    if (rect.top < 8) dy += 8 - rect.top;
+    if (rect.bottom > maxY) dy += maxY - rect.bottom;
+    if (dx || dy) {
+      b.el.style.left = `${x + dx}px`;
+      b.el.style.top = `${y + dy}px`;
+    }
   }
 }
 
+let playerPending = null;
+let playerChatLock = 0;
+let lastReplyText = '';
+
+function classifyTalk(raw) {
+  const t = String(raw || '').replace(/\s+/g, '');
+  const has = (...words) => words.some((w) => w && t.includes(w));
+  if (has('外卖', '打包', '送到', '配送', '外带', '送餐', '带走')) return 'delivery';
+  if (has('优惠', '券', '会员', '打折', '折扣', '满减', '储值', '团购', '促销')) return 'promo';
+  if (has('地址', '在哪', '在哪儿', '怎么走', '哪家', '位置', '路怎么')) return 'addr';
+  if (has('太多', '太大', '少点', '再加', '够不够', '点多', '会不会多', '少一些')) return 'amount';
+  if (has('点餐', '菜单', '吃什么', '推荐', '有什么', '点什么', '吃点', '想吃', '特色', '招牌', '来份', '来串', '点个')) return 'order';
+  if (MENU.some((item) => t.includes(item.name))) return 'order';
+  if (has('超鲜羊肉', '牛上脑', '青花椒', '羔羊', '西冷', '油边', '松板', '黑虎虾', '羊排', '肥肠', '鸡翅', '柠檬茶')) return 'order';
+  if (has('火候', '炭火', '炉子', '火大', '火小', '焦了') || t.includes('烤')) return 'fire';
+  if (has('谢谢', '多谢', '辛苦')) return 'thanks';
+  if (has('啤酒', '喝酒', '来一杯', '碰杯', '喝点')) return 'drink';
+  if (has('好吃', '真香', '好香', '不错')) return 'tasty';
+  if (has('你好', '老板', '店长', '您好', '在吗', '哈喽', '嗨', '早上好', '晚上好')) return 'hi';
+  return 'other';
+}
+
+function mentionedDish(raw) {
+  const t = String(raw || '');
+  return MENU.find((item) => t.includes(item.name)) || null;
+}
+
+function pickReply(lines, avoid) {
+  const pool = lines.length > 1 ? lines.filter((l) => l !== avoid) : lines.slice();
+  return pool[Math.floor(Math.random() * pool.length)] || lines[0];
+}
+
+function composeReply(text, asManager) {
+  const key = classifyTalk(text);
+  const bank = asManager ? MANAGER_REPLIES : GUEST_REPLIES;
+  const dish = mentionedDish(text);
+  if (dish && key === 'order') {
+    const named = asManager
+      ? [`${dish.name}有，坐下点就行。`, `要${dish.name}的话，坐下点。`]
+      : [`这${dish.name}挺香的。`, `${dish.name}不错，可以点。`];
+    lastReplyText = pickReply(named, lastReplyText);
+    return lastReplyText;
+  }
+  const lines = bank[key] || bank.other;
+  lastReplyText = pickReply(lines, lastReplyText);
+  return lastReplyText;
+}
+
+function findChatPartner() {
+  let bestGuest = null;
+  let bestD = Infinity;
+  const here = player.position;
+  for (const who of npcs) {
+    const d = who.position.distanceTo(here);
+    if (d < bestD) {
+      bestD = d;
+      bestGuest = who;
+    }
+  }
+  const dMgr = atan.position.distanceTo(here);
+  const GUEST_NEAR = 4.6;
+  const MGR_NEAR = 5.2;
+  if (bestGuest && bestD <= GUEST_NEAR) return bestGuest;
+  if (dMgr <= MGR_NEAR || state.seated) return atan;
+  if (dMgr <= 6.5 && !(bestGuest && bestD < dMgr)) return atan;
+  return null;
+}
+
 function updateChat(dt) {
-  if (shot || state.managerTalking) return;
+  if (playerChatLock > 0) playerChatLock -= dt;
+  if (playerPending) {
+    playerPending.t -= dt;
+    if (playerPending.t <= 0) {
+      const { who, text, asManager } = playerPending;
+      playerPending = null;
+      if (who) say(who, text, 3.0, !!asManager);
+      playerChatLock = Math.max(playerChatLock, 2.8);
+    }
+  }
+  if (playerChatLock <= 0 && !playerPending) state.playerChatting = false;
+  if (shot || state.managerTalking || atanAnim || state.playerChatting || playerPending || playerChatLock > 0) return;
   if (pendingReply) {
     pendingReply.t -= dt;
     if (pendingReply.t <= 0) {
       const { who, text } = pendingReply;
       pendingReply = null;
-      if (who && !state.managerTalking) say(who, text, 2.5);
+      if (who && !state.managerTalking && !state.playerChatting) say(who, text, 2.5);
     }
     return;
   }
@@ -1322,16 +1426,27 @@ const audio = {
   fire: new Audio('./assets/fire.mp3'),
   clink: new Audio('./assets/clink.mp3'),
   woosh: new Audio('./assets/woosh.mp3'),
+  music: new Audio('./assets/music.mp3'),
 };
 audio.fire.loop = true;
+audio.music.loop = true;
 audio.fire.volume = 0.42;
+audio.music.volume = 0.18;
 audio.clink.volume = 0.55;
 audio.woosh.volume = 0.4;
 
+function applyMute() {
+  const m = state.muted;
+  audio.fire.muted = audio.clink.muted = audio.woosh.muted = audio.music.muted = m;
+}
+
 async function unlockAudio() {
   if (state.audioReady || state.muted) return;
+  applyMute();
   try {
-    await audio.fire.play();
+    const plays = [audio.fire.play()];
+    if (audio.music) plays.push(audio.music.play());
+    await Promise.allSettled(plays);
     state.audioReady = true;
   } catch (e) { /* blocked until next gesture */ }
 }
@@ -1340,8 +1455,15 @@ muteEl.addEventListener('click', (e) => {
   e.stopPropagation();
   state.muted = !state.muted;
   muteEl.textContent = state.muted ? '×' : '♪';
-  audio.fire.muted = audio.clink.muted = audio.woosh.muted = state.muted;
-  if (!state.muted) unlockAudio();
+  applyMute();
+  if (!state.muted) {
+    if (state.audioReady) {
+      audio.fire.play().catch(() => {});
+      audio.music.play().catch(() => {});
+    } else {
+      unlockAudio();
+    }
+  }
 });
 
 function playSfx(name) {
@@ -1382,6 +1504,7 @@ function uiBlock(target) {
     target.closest('#mute') ||
     target.closest('#panel') ||
     target.closest('#menu') ||
+    target.closest('#talk') ||
     target === exitEl
   );
 }
@@ -1487,6 +1610,62 @@ function walkTo(point, seatAfter = null) {
   hideHint();
 }
 
+function sendTalk() {
+  const text = (talkIn.value || '').trim().slice(0, 24);
+  if (!text) return;
+  talkIn.value = '';
+  talkIn.blur();
+  document.body.classList.remove('talking');
+  unlockAudio();
+  pendingReply = null;
+  state.playerChatting = true;
+  playerChatLock = 6;
+  say(player, text, 3.4);
+  const partner = findChatPartner();
+  if (!partner) {
+    showHint('走近一点再说话', false);
+    playerPending = null;
+    playerChatLock = 2.2;
+    return;
+  }
+  const reply = composeReply(text, partner === atan);
+  playerPending = {
+    who: partner,
+    text: reply,
+    asManager: partner === atan,
+    t: 0.6 + Math.random() * 0.6,
+  };
+}
+
+talkEl.addEventListener('submit', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  sendTalk();
+});
+talkEl.addEventListener('pointerdown', (e) => e.stopPropagation());
+talkEl.addEventListener('pointerup', (e) => e.stopPropagation());
+talkEl.addEventListener('click', (e) => e.stopPropagation());
+talkIn.addEventListener('focus', () => {
+  document.body.classList.add('talking');
+  unlockAudio();
+});
+talkIn.addEventListener('blur', () => document.body.classList.remove('talking'));
+talkIn.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.isComposing || e.keyCode === 229)) e.stopPropagation();
+});
+
+function syncTalkDock() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const overlap = Math.max(0, innerHeight - (vv.height + vv.offsetTop));
+  talkEl.style.bottom = overlap > 0 ? `${overlap}px` : '';
+  document.body.classList.toggle('kb-open', overlap > 60);
+}
+if (window.visualViewport) {
+  visualViewport.addEventListener('resize', syncTalkDock);
+  visualViewport.addEventListener('scroll', syncTalkDock);
+}
+
 actionsEl.addEventListener('click', (e) => {
   const act = e.target.dataset.act;
   if (!act || !state.seated) return;
@@ -1550,11 +1729,26 @@ function updatePlayer(dt) {
 }
 
 function updateCamera(dt) {
+  if (state.shotCam) return;
   if (state.seated && state.sittingAt) {
     const seat = state.sittingAt;
     const grill = seat.grill.getWorldPosition(tmp);
     const back = new THREE.Vector3(0, 1.35, 1.55).applyAxisAngle(Y_AXIS, seat.rot);
     tmp2.copy(seat.sitPos).add(back);
+    // Don't park the camera inside a guest sitting across the table.
+    for (const who of npcs) {
+      const dx = tmp2.x - who.position.x;
+      const dz = tmp2.z - who.position.z;
+      if (dx * dx + dz * dz < 0.55 * 0.55) {
+        const grillPos = seat.grill.getWorldPosition(tmp);
+        const away = new THREE.Vector3(tmp2.x - grillPos.x, 0, tmp2.z - grillPos.z);
+        if (away.lengthSq() < 0.01) away.set(-Math.sin(seat.rot), 0, -Math.cos(seat.rot));
+        away.normalize();
+        tmp2.add(away.multiplyScalar(0.9));
+        tmp2.y += 0.2;
+        break;
+      }
+    }
     camera.position.lerp(tmp2, 1 - Math.pow(0.001, dt));
     const look = grill.clone();
     look.y += 0.15;
@@ -1617,9 +1811,16 @@ function updateAnims(dt) {
 }
 
 function onResize() {
+  const vv = window.visualViewport;
+  const kb = vv ? Math.max(0, innerHeight - (vv.height + vv.offsetTop)) : 0;
+  if (kb > 80 || document.body.classList.contains('kb-open')) {
+    syncTalkDock();
+    return;
+  }
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight, false);
+  syncTalkDock();
 }
 addEventListener('resize', onResize);
 addEventListener('orientationchange', () => setTimeout(onResize, 200));
@@ -1667,6 +1868,34 @@ function runShot() {
       return x > 48 && x < innerWidth - 48 && y > 48 && y < innerHeight - 90;
     }) || npcs[0];
     if (visible) say(visible, '这串够大', 12, false);
+  } else if (shot === 'chat') {
+    // Stand in the aisle by the left-front table so both heads stay in frame.
+    hideHint();
+    player.position.set(-1.55, 0, 3.15);
+    player.rotation.y = -Math.PI / 2;
+    player.updateMatrixWorld(true);
+    const mobile = innerWidth < 700;
+    if (mobile) {
+      camera.position.set(0.55, 2.4, 6.15);
+      camera.lookAt(-2.45, 0.82, 3.2);
+    } else {
+      camera.position.set(0.15, 2.15, 4.55);
+      camera.lookAt(-3.35, 0.95, 3.05);
+    }
+    state.shotCam = true;
+    say(player, '有什么推荐的', 20);
+    const partner = findChatPartner() || npcs[0];
+    if (partner) {
+      const line = partner === atan ? '先坐下点，青花椒鸡也行。' : '超鲜羊肉不错，牛上脑也行。';
+      say(partner, line, 20, partner === atan);
+    }
+  } else if (shot === 'seatedbar') {
+    const table = tables[1] || tables[0];
+    const seat = table.userData.seats.find((s) => !s.occupied) || table.userData.seats[0];
+    if (seat && !seat.occupied) setSeated(true, seat);
+    hideHint();
+  } else if (shot === 'music') {
+    // hall as arrived, mute stays on ♪
   }
 }
 
@@ -1683,4 +1912,4 @@ if (shot) {
 requestAnimationFrame(tick);
 addEventListener('pointerdown', unlockAudio, { once: false });
 
-window.__yunshang = { state, tables, npcs, atan, openMenu, closeMenu, say, startManager, cart };
+window.__yunshang = { state, tables, npcs, atan, player, openMenu, closeMenu, say, startManager, cart, sendTalk, findChatPartner, composeReply };
