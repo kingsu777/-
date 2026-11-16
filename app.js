@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CATS, MENU, MENU_BY_ID, formatPrice, CHAT_LINES, MANAGER_LINE, MANAGER_CHIRPS, MANAGER_REPLIES, GUEST_REPLIES } from './menu.js';
+import { CATS, MENU, MENU_BY_ID, formatPrice, CHAT_LINES, MANAGER_LINE, MANAGER_CHIRPS, MANAGER_REPLIES, GUEST_REPLIES, COOK_PERFECT_LINES, COOK_BURNT_LINES, MANAGER_BURNT_LINES, TOAST_COOK_LINES } from './menu.js';
 
 const canvas = document.getElementById('c');
 const hintEl = document.getElementById('hint');
@@ -37,6 +37,11 @@ const state = {
   seatedOnce: false,
   menuOpen: false,
   menuCat: '推荐',
+  cookTipShown: false,
+  cookReactAt: 0,
+  flipHintAt: 0,
+  managerBurntWarned: false,
+  burntSession: 0,
 };
 
 const cart = new Map();
@@ -469,35 +474,283 @@ function meatMat(color) {
   return m;
 }
 
+const COOK_RATE = {
+  chicken: 0.048,
+  'beef-big': 0.028,
+  beef: 0.034,
+  lamb: 0.034,
+  'lamb-rib': 0.028,
+  fatty: 0.028,
+  tendon: 0.028,
+  shrimp: 0.050,
+  liver: 0.034,
+  intestine: 0.034,
+  skin: 0.040,
+  cartilage: 0.040,
+  wing: 0.048,
+  sausage: 0.040,
+  mushroom: 0.050,
+  baconenoki: 0.034,
+  veg: 0.052,
+  pepper: 0.052,
+  bread: 0.042,
+  tofu: 0.050,
+  potato: 0.052,
+  meat: 0.038,
+};
+
+function hexToRgb(hex) {
+  const n = Number(hex);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+function mixRgb(a, b, t) {
+  const k = Math.min(1, Math.max(0, t));
+  return {
+    r: Math.round(a.r + (b.r - a.r) * k),
+    g: Math.round(a.g + (b.g - a.g) * k),
+    b: Math.round(a.b + (b.b - a.b) * k),
+  };
+}
+
+const COOK_BROWN = { r: 118, g: 64, b: 34 };
+const COOK_DARK = { r: 42, g: 26, b: 16 };
+const COOK_BLACK = { r: 16, g: 11, b: 8 };
+
+function stageOf(d) {
+  if (d < 0.18) return 'raw';
+  if (d < 0.30) return 'tint';
+  if (d < 0.58) return 'perfect';
+  if (d < 0.80) return 'savory';
+  if (d < 0.88) return 'over';
+  return 'burnt';
+}
+
+function skewerGrade(s) {
+  const a = s.userData.doneness[0];
+  const b = s.userData.doneness[1];
+  const lo = Math.min(a, b);
+  const hi = Math.max(a, b);
+  if (hi >= 0.88) return 'burnt';
+  if (lo >= 0.30 && hi < 0.80) return 'perfect';
+  if (lo >= 0.30 && hi < 0.88) return 'over';
+  if (hi >= 0.30 && lo < 0.30) return 'uneven';
+  if (hi >= 0.18) return 'tint';
+  return 'raw';
+}
+
+function downIndex(s) {
+  const turns = Math.round((s.rotation.x || 0) / Math.PI);
+  return ((turns % 2) + 2) % 2;
+}
+
+function cookColor(baseHex, stage) {
+  const c = hexToRgb(baseHex);
+  if (stage === 'raw') return mixRgb(c, { r: 232, g: 190, b: 168 }, 0.12);
+  if (stage === 'tint') return mixRgb(c, COOK_BROWN, 0.34);
+  if (stage === 'perfect') return mixRgb(c, COOK_BROWN, 0.60);
+  if (stage === 'savory') return mixRgb(mixRgb(c, COOK_BROWN, 0.72), COOK_DARK, 0.22);
+  if (stage === 'over') return mixRgb(COOK_BROWN, COOK_DARK, 0.58);
+  return mixRgb(COOK_DARK, COOK_BLACK, 0.62);
+}
+
+const faceTexCache = new Map();
+function getFaceTex(style, tone, stage, seed) {
+  const key = `${style}|${tone}|${stage}|${seed}`;
+  let tex = faceTexCache.get(key);
+  if (tex) return tex;
+  const st = SKEWER_STYLE[style] || SKEWER_STYLE.meat;
+  const base = tone === 'b' ? st.b : st.a;
+  const rgb = cookColor(base, stage);
+  const c = document.createElement('canvas');
+  c.width = 64;
+  c.height = 64;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = `rgb(${rgb.r},${rgb.g},${rgb.b})`;
+  ctx.fillRect(0, 0, 64, 64);
+  for (let y = 0; y < 64; y++) {
+    const v = (Math.sin(y * 0.45 + seed * 1.7) * 0.5 + 0.5) * 0.10;
+    ctx.fillStyle = `rgba(20,10,6,${v})`;
+    ctx.fillRect(0, y, 64, 1);
+  }
+  const stripe = { raw: 0, tint: 0.14, perfect: 0.30, savory: 0.42, over: 0.58, burnt: 0.78 }[stage] || 0;
+  if (stripe > 0) {
+    for (let i = 0; i < 4; i++) {
+      const x = 8 + i * 14 + (seed % 3);
+      ctx.fillStyle = `rgba(18,10,6,${stripe})`;
+      ctx.fillRect(x, 0, stage === 'burnt' ? 5 : 3, 64);
+      if (stage === 'burnt' || stage === 'over') {
+        ctx.fillStyle = `rgba(8,6,4,${stripe * 0.7})`;
+        ctx.fillRect(x - 1, 0, 1, 64);
+      }
+    }
+  }
+  if (stage === 'savory' || stage === 'over' || stage === 'burnt') {
+    const n = stage === 'burnt' ? 70 : stage === 'over' ? 36 : 16;
+    for (let i = 0; i < n; i++) {
+      const x = (seed * 17 + i * 31) % 64;
+      const y = (seed * 13 + i * 47) % 64;
+      const r = stage === 'burnt' ? 1.4 + (i % 4) : 1 + (i % 2) * 0.8;
+      ctx.fillStyle = `rgba(8,6,4,${stage === 'burnt' ? 0.78 : 0.48})`;
+      ctx.beginPath();
+      ctx.ellipse(x, y, r, r * 0.65, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  if (stage === 'burnt') {
+    ctx.fillStyle = 'rgba(8,6,4,0.62)';
+    ctx.fillRect(0, 0, 64, 7);
+    ctx.fillRect(0, 57, 64, 7);
+    ctx.fillRect(0, 0, 7, 64);
+    ctx.fillRect(57, 0, 7, 64);
+    ctx.fillStyle = 'rgba(12,8,6,0.35)';
+    ctx.fillRect(0, 0, 64, 64);
+  }
+  if (stage === 'perfect' || stage === 'savory') {
+    ctx.fillStyle = 'rgba(255,210,130,0.08)';
+    ctx.fillRect(0, 0, 64, 64);
+  }
+  tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.anisotropy = Math.min(4, aniso);
+  faceTexCache.set(key, tex);
+  return tex;
+}
+
+function cookRoughness(stage) {
+  if (stage === 'raw') return 0.72;
+  if (stage === 'tint') return 0.6;
+  if (stage === 'perfect') return 0.48;
+  if (stage === 'savory') return 0.5;
+  if (stage === 'over') return 0.7;
+  return 0.88;
+}
+
+function applyCookVisual(s, force = false) {
+  const d = s.userData.doneness;
+  if (!d) return;
+  const key = `${stageOf(d[0])}|${stageOf(d[1])}`;
+  if (!force && s.userData.visualKey === key) return;
+  s.userData.visualKey = key;
+  const style = s.userData.style || 'meat';
+  const seed = s.userData.cookSeed || 0;
+  const stage0 = stageOf(d[0]);
+  const stage1 = stageOf(d[1]);
+  const up = 1 - downIndex(s);
+  const upStage = stageOf(d[up]);
+  for (const piece of (s.userData.pieces || [])) {
+    if (piece.kind === 'faces') {
+      piece.mat0.map = getFaceTex(style, piece.tone, stage0, seed);
+      piece.mat1.map = getFaceTex(style, piece.tone, stage1, seed + 1);
+      piece.mat0.roughness = cookRoughness(stage0);
+      piece.mat1.roughness = cookRoughness(stage1);
+      const rimStage = d[0] > d[1] ? stage0 : stage1;
+      piece.rim.map = getFaceTex(style, piece.tone, rimStage, seed + 2);
+      piece.rim.color.set(rimStage === 'burnt' ? 0x1a120c : 0xffffff);
+      piece.rim.roughness = cookRoughness(rimStage);
+      piece.mat0.needsUpdate = true;
+      piece.mat1.needsUpdate = true;
+      piece.rim.needsUpdate = true;
+    } else if (piece.kind === 'up') {
+      piece.mat.map = getFaceTex(style, piece.tone, upStage, seed);
+      piece.mat.color.set(upStage === 'burnt' ? 0x2a1a12 : 0xffffff);
+      piece.mat.roughness = cookRoughness(upStage);
+      piece.mat.needsUpdate = true;
+    }
+  }
+}
+
+function makeFaceMats(style, tone, seed) {
+  const mk = () => new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    roughness: 0.58,
+    metalness: 0.02,
+    map: getFaceTex(style, tone, 'raw', seed),
+  });
+  const mat0 = mk();
+  const mat1 = mk();
+  const rim = mk();
+  return { mat0, mat1, rim };
+}
+
 function makeSkewer(styleName = 'meat', cooked = true) {
   const st = SKEWER_STYLE[styleName] || SKEWER_STYLE.meat;
   const g = new THREE.Group();
   const stick = cyl(0.012, 0.62, mats.woodLight, 0, 0, 0, g, 6);
   stick.rotation.z = Math.PI / 2;
   stick.castShadow = false;
-  const raw = cooked ? 1 : 1.15;
-  const ma = meatMat(st.a * 1); // color already
-  const mb = meatMat(st.b);
   const n = st.n || 5;
-  const scale = (st.scale || 1) * (cooked ? 1 : 0.95);
+  const scale = (st.scale || 1) * (cooked ? 1 : 0.98);
+  const seed = Math.floor(Math.random() * 8);
+  const pieces = [];
+  const addFacedCube = (w, h, d, x, y, z, tone) => {
+    const { mat0, mat1, rim } = makeFaceMats(styleName, tone, seed);
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), [rim, rim, mat1, mat0, rim, rim]);
+    mesh.position.set(x, y, z);
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    g.add(mesh);
+    pieces.push({ kind: 'faces', mesh, mat0, mat1, rim, tone });
+    return mesh;
+  };
+  const addUpMesh = (mesh, tone) => {
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.58,
+      map: getFaceTex(styleName, tone, cooked ? 'perfect' : 'raw', seed),
+    });
+    mesh.material = mat;
+    mesh.castShadow = false;
+    pieces.push({ kind: 'up', mesh, mat, tone });
+    return mesh;
+  };
   if (st.shape === 'sausage') {
-    const s = cyl(0.035 * scale, 0.28, ma, 0, 0.01, 0, g, 10);
+    const s = cyl(0.035 * scale, 0.28, mats.woodLight, 0, 0.01, 0, g, 10);
     s.rotation.z = Math.PI / 2;
-    s.castShadow = false;
+    addUpMesh(s, 'a');
   } else if (st.shape === 'shrimp') {
     for (let i = 0; i < 2; i++) {
-      const sh = sph(0.04 * scale, i ? mb : ma, -0.06 + i * 0.12, 0.02, 0, g, 8);
+      const sh = sph(0.04 * scale, mats.woodLight, -0.06 + i * 0.12, 0.02, 0, g, 8);
       sh.scale.set(1.3, 0.7, 0.8);
-      sh.castShadow = false;
+      addUpMesh(sh, i ? 'b' : 'a');
     }
   } else {
     for (let i = 0; i < n; i++) {
-      const cube = box(0.07 * scale, 0.055 * scale, 0.055 * scale, i % 2 ? mb : ma, -0.16 + i * (0.32 / Math.max(n - 1, 1)), 0.01, 0, g, false);
+      const cube = addFacedCube(
+        0.07 * scale,
+        0.055 * scale,
+        0.055 * scale,
+        -0.16 + i * (0.32 / Math.max(n - 1, 1)),
+        0.01,
+        0,
+        i % 2 ? 'b' : 'a'
+      );
       cube.rotation.y = 0.2;
     }
   }
+  let doneness;
+  if (cooked) {
+    const mid = 0.36 + Math.random() * 0.26;
+    doneness = [
+      THREE.MathUtils.clamp(mid + (Math.random() - 0.5) * 0.14, 0.18, 0.72),
+      THREE.MathUtils.clamp(mid + (Math.random() - 0.5) * 0.16, 0.16, 0.70),
+    ];
+    if (Math.random() < 0.42) g.rotation.x = Math.PI;
+  } else {
+    doneness = [0.02 + Math.random() * 0.05, 0.02 + Math.random() * 0.04];
+  }
   g.userData.flipping = false;
   g.userData.style = styleName;
+  g.userData.doneness = doneness;
+  g.userData.cookRate = COOK_RATE[styleName] || COOK_RATE.meat;
+  g.userData.cookSeed = seed;
+  g.userData.pieces = pieces;
+  g.userData.owner = cooked ? 'npc' : 'player';
+  g.userData.needFlipHinted = false;
+  g.userData.announcedPerfect = false;
+  g.userData.announcedBurnt = false;
+  g.userData.perfectAt = 0;
+  applyCookVisual(g, true);
   return g;
 }
 
@@ -514,9 +767,13 @@ function layoutSkewers(grill) {
     const z = countInRow <= 1 ? 0 : -span / 2 + col * (span / Math.max(countInRow - 1, 1));
     const x = n <= 10 ? 0 : (row - 0.35) * 0.1;
     s.position.set(x, y, z);
-    if (!s.userData.flipping) s.rotation.x = 0;
+    if (!s.userData.flipping) {
+      const turns = Math.round((s.rotation.x || 0) / Math.PI);
+      s.rotation.x = (((turns % 2) + 2) % 2) * Math.PI;
+    }
   });
 }
+
 
 function makePit() {
   const g = new THREE.Group();
@@ -547,6 +804,7 @@ function makePit() {
   g.userData.pitW = pw;
   g.userData.pitL = pl;
   g.userData.skewerY = pd + 0.03;
+  g.userData.fanHeat = 0;
   return g;
 }
 
@@ -944,6 +1202,7 @@ function buildPeople() {
     npcs.push(p);
   });
 
+
   // a couple of starter dishes on occupied tables
   for (const idx of [0, 4]) {
     const t = tables[idx];
@@ -983,12 +1242,12 @@ plaque.visible = false;
 plaque.userData.kind = 'plaque';
 interactives.push(plaque);
 
-function showHint(text, persist = false) {
+function showHint(text, persist = false, ms = 3200) {
   hintEl.textContent = text;
   hintEl.classList.add('show');
   if (!persist) {
     clearTimeout(showHint._t);
-    showHint._t = setTimeout(() => hintEl.classList.remove('show'), 3200);
+    showHint._t = setTimeout(() => hintEl.classList.remove('show'), ms);
   }
 }
 function hideHint() { hintEl.classList.remove('show'); }
@@ -1133,6 +1392,7 @@ function serveOrder(seat, lines) {
     for (let i = 0; i < qty; i++) {
       if (item.skewer) {
         const s = makeSkewer(item.style || 'meat', false);
+        s.userData.owner = 'player';
         grill.add(s);
         grill.userData.skewers.push(s);
       } else {
@@ -1160,8 +1420,16 @@ okEl.addEventListener('click', (e) => {
   cart.clear();
   renderSum();
   closeMenu();
-  showHint(skewThis ? '串来了，慢慢烤' : '好，先放桌上', false);
-  if ((skewThis >= 10 || state.sessionSkewers > 15) && !state.managerWarned) startManager();
+  if (skewThis && !state.cookTipShown) {
+    state.cookTipShown = true;
+    showHint('看着火，该翻就翻，扇一下火会旺一点。', false, 4200);
+  } else {
+    showHint(skewThis ? '串来了，慢慢烤' : '好，先放桌上', false);
+  }
+  if ((skewThis >= 10 || state.sessionSkewers > 15) && !state.managerWarned) {
+    state.managerWarned = true;
+    startManager(MANAGER_LINE);
+  }
 });
 menuEl.querySelector('.menu-x').addEventListener('click', (e) => { e.stopPropagation(); closeMenu(); });
 menuEl.addEventListener('click', (e) => e.stopPropagation());
@@ -1215,7 +1483,7 @@ function updateBubbles() {
     const maxY = innerHeight - talkReserve;
     const isMe = b.who === player;
     if (!isMe && tmp2.z > -0.35) { b.el.style.display = 'none'; continue; }
-    if (!isMe && (x < -80 || x > innerWidth + 80 || y < -40 || y > innerHeight + 40)) {
+    if (!isMe && (x < -80 || x > innerWidth + 80 || y < -220 || y > innerHeight + 40)) {
       b.el.style.display = 'none';
       continue;
     }
@@ -1358,14 +1626,13 @@ function aislePath(from, to) {
   return points.filter((p) => p.distanceTo(from) > 0.15);
 }
 
-function startManager() {
-  if (state.managerTalking) return;
-  state.managerWarned = true;
+function startManager(line) {
+  if (state.managerTalking || atanAnim) return;
   const dest = player.position.clone();
   const side = new THREE.Vector3(1.15, 0, 0.2).applyAxisAngle(Y_AXIS, player.rotation.y);
   dest.add(side);
   dest.y = 0;
-  atanAnim = { phase: 'walkin', dest, path: null, i: 0, t: 0 };
+  atanAnim = { phase: 'walkin', dest, path: null, i: 0, t: 0, line: line || MANAGER_LINE };
 }
 
 function updateAtan(dt) {
@@ -1388,7 +1655,7 @@ function updateAtan(dt) {
           a.t = 0;
           a.path = null;
           state.managerTalking = true;
-          say(atan, MANAGER_LINE, 3.4, true);
+          say(atan, a.line || MANAGER_LINE, 3.4, true);
           const look = player.position.clone().sub(atan.position);
           atan.rotation.y = Math.atan2(look.x, look.z);
           atan.userData.lleg.rotation.x = 0;
@@ -1471,6 +1738,52 @@ function playSfx(name) {
   const a = audio[name].cloneNode();
   a.volume = audio[name].volume;
   a.play().catch(() => {});
+}
+
+function fanGrill(grill) {
+  if (!grill) return;
+  playSfx('woosh');
+  grill.userData.fanHeat = 1;
+  const light = grill.children.find((c) => c.isLight);
+  if (light) {
+    light.userData.boost = 1;
+    light.userData.boostT = 0.6;
+  }
+}
+
+function tableNeighbor(seat) {
+  if (!seat) return null;
+  const same = seat.table.userData.seats.find((s) => s.who && s.who !== player);
+  if (same) return same.who;
+  let best = null;
+  let bestD = 4.8;
+  const here = (seat.sitPos || player.position);
+  for (const who of npcs) {
+    if (who === player) continue;
+    const d = who.position.distanceTo(here);
+    if (d < bestD) {
+      bestD = d;
+      best = who;
+    }
+  }
+  return best;
+}
+
+function hasFreshPerfect(grill) {
+  if (!grill) return false;
+  const now = performance.now();
+  return grill.userData.skewers.some((s) => {
+    if (s.userData.owner !== 'player') return false;
+    if (skewerGrade(s) === 'perfect') return true;
+    return s.userData.perfectAt && now - s.userData.perfectAt < 20000;
+  });
+}
+
+function canCookTalk() {
+  if (shot) return false;
+  if (state.playerChatting || playerPending || playerChatLock > 0) return false;
+  if (state.managerTalking || atanAnim) return false;
+  return true;
 }
 
 function flipSkewers(grill, all = true) {
@@ -1673,14 +1986,7 @@ actionsEl.addEventListener('click', (e) => {
   const grill = state.sittingAt.grill;
   if (act === 'order') openMenu();
   if (act === 'flip') flipSkewers(grill);
-  if (act === 'fan') {
-    playSfx('woosh');
-    const light = grill.children.find((c) => c.isLight);
-    if (light) {
-      light.userData.boost = 1;
-      light.userData.boostT = 0.6;
-    }
-  }
+  if (act === 'fan') fanGrill(grill);
   if (act === 'toast') {
     playSfx('clink');
     const cups = state.sittingAt.table.userData.cups;
@@ -1688,9 +1994,15 @@ actionsEl.addEventListener('click', (e) => {
       c.userData.toastT = 0;
       c.userData.toastDir = i === 0 ? 1 : -1;
     });
+    const neigh = tableNeighbor(state.sittingAt);
     state.sittingAt.table.userData.seats.forEach((s) => {
       if (s.who && s.who !== player) s.who.userData.toast = 0.7;
     });
+    if (neigh && hasFreshPerfect(grill) && canCookTalk()) {
+      const line = TOAST_COOK_LINES[Math.floor(Math.random() * TOAST_COOK_LINES.length)];
+      say(neigh, line, 2.4);
+      state.cookReactAt = performance.now() + 7000;
+    }
   }
 });
 
@@ -1780,6 +2092,10 @@ function updateAnims(dt) {
       if (t >= 1) {
         s.userData.flipping = false;
         s.position.y = restY;
+        const turns = Math.round((s.rotation.x || 0) / Math.PI);
+        s.rotation.x = (((turns % 2) + 2) % 2) * Math.PI;
+        s.userData.needFlipHinted = false;
+        applyCookVisual(s, true);
       }
     }
     const light = grill.children.find((c) => c.isLight);
@@ -1803,9 +2119,119 @@ function updateAnims(dt) {
       p.userData.toast -= dt;
       p.userData.head.rotation.z = Math.sin(p.userData.toast * 8) * 0.08;
     }
-    if (Math.random() < 0.0015) {
+    if (Math.random() < 0.0012) {
       const seat = seats.find((s) => s.who === p);
       if (seat) flipSkewers(seat.grill, false);
+    }
+  }
+}
+
+function updateCooking(dt) {
+  const now = performance.now();
+  for (const table of tables) {
+    const grill = table.userData.grill;
+    if (!grill) continue;
+    if (grill.userData.fanHeat > 0) {
+      grill.userData.fanHeat = Math.max(0, grill.userData.fanHeat - dt / 2.8);
+    }
+    const heat = 1 + 1.15 * (grill.userData.fanHeat || 0);
+    const playerGrill = state.sittingAt && state.sittingAt.grill === grill;
+    let needFlip = false;
+    for (const s of grill.userData.skewers) {
+      if (!state.cookPaused && !s.userData.flipping) {
+        const down = downIndex(s);
+        let rate = (s.userData.cookRate || 0.036) * heat;
+        if (s.userData.owner !== 'player') rate *= 0.85;
+        s.userData.doneness[down] = Math.min(1.25, s.userData.doneness[down] + rate * dt);
+        if (s.userData.owner !== 'player' && s.userData.doneness[down] > 0.78) {
+          s.userData.doneness[down] = 0.78;
+        }
+        applyCookVisual(s);
+        if (s.userData.owner !== 'player' && !s.userData.flipping) {
+          const up = 1 - down;
+          if (s.userData.doneness[down] > 0.46 && s.userData.doneness[up] < s.userData.doneness[down] - 0.12) {
+            if (Math.random() < 0.015) {
+              if (!s.userData.flipping) {
+                s.userData.flipping = true;
+                s.userData.flipFrom = s.rotation.x;
+                s.userData.flipT = 0;
+              }
+            }
+          }
+        }
+      }
+      if (s.userData.owner !== 'player') continue;
+      const grade = skewerGrade(s);
+      const down = downIndex(s);
+      const up = 1 - down;
+      const dd = s.userData.doneness;
+      if (dd[down] >= 0.42 && dd[up] < dd[down] - 0.14 && dd[down] < 0.90) needFlip = true;
+      if (grade === 'perfect' && !s.userData.announcedPerfect) {
+        s.userData.announcedPerfect = true;
+        s.userData.perfectAt = now;
+        s.userData._justPerfect = true;
+      }
+      if (grade === 'burnt' && !s.userData.announcedBurnt) {
+        s.userData.announcedBurnt = true;
+        s.userData._justBurnt = true;
+      }
+    }
+
+    if (playerGrill && !shot) {
+      const justPerfect = grill.userData.skewers.filter((s) => s.userData._justPerfect);
+      const justBurnt = grill.userData.skewers.filter((s) => s.userData._justBurnt);
+      justPerfect.forEach((s) => { s.userData._justPerfect = false; });
+      justBurnt.forEach((s) => { s.userData._justBurnt = false; });
+
+      if (needFlip && now - (state.flipHintAt || 0) > 8000 && state.seated && !state.menuOpen && !state.playerChatting && !document.body.classList.contains('talking')) {
+        const any = grill.userData.skewers.some((s) => {
+          if (s.userData.owner !== 'player' || s.userData.needFlipHinted) return false;
+          const down = downIndex(s);
+          const up = 1 - down;
+          const dd = s.userData.doneness;
+          return dd[down] >= 0.42 && dd[up] < dd[down] - 0.14 && dd[down] < 0.90;
+        });
+        if (any) {
+          showHint('该翻了', false, 2000);
+          state.flipHintAt = now;
+          grill.userData.skewers.forEach((s) => {
+            const down = downIndex(s);
+            const up = 1 - down;
+            const dd = s.userData.doneness;
+            if (s.userData.owner === 'player' && dd[down] >= 0.42 && dd[up] < dd[down] - 0.14) s.userData.needFlipHinted = true;
+          });
+        }
+      }
+
+      if (canCookTalk() && now >= (state.cookReactAt || 0)) {
+        const speaker = tableNeighbor(state.sittingAt) || atan;
+        if (justPerfect.length) {
+          const line = COOK_PERFECT_LINES[Math.floor(Math.random() * COOK_PERFECT_LINES.length)];
+          say(speaker, line, 2.6, speaker === atan);
+          state.cookReactAt = now + 10000;
+        } else if (justBurnt.length) {
+          const line = COOK_BURNT_LINES[Math.floor(Math.random() * COOK_BURNT_LINES.length)];
+          say(speaker, line, 2.6, speaker === atan);
+          state.cookReactAt = now + 8000;
+          if (now - (state.burntWindowAt || 0) > 12000) state.burntSession = 0;
+          state.burntWindowAt = now;
+          state.burntSession += justBurnt.length;
+          if (state.burntSession >= 3 && !state.managerBurntWarned && !atanAnim && !state.managerTalking) {
+            state.managerBurntWarned = true;
+            const mline = MANAGER_BURNT_LINES[Math.floor(Math.random() * MANAGER_BURNT_LINES.length)];
+            startManager(mline);
+          }
+        }
+      } else if (justBurnt.length) {
+        if (now - (state.burntWindowAt || 0) > 12000) state.burntSession = 0;
+        state.burntWindowAt = now;
+        state.burntSession += justBurnt.length;
+        if (state.burntSession >= 3 && !state.managerBurntWarned && !atanAnim && !state.managerTalking && !state.playerChatting) {
+          state.managerBurntWarned = true;
+          const mline = MANAGER_BURNT_LINES[Math.floor(Math.random() * MANAGER_BURNT_LINES.length)];
+          startManager(mline);
+        }
+      }
     }
   }
 }
@@ -1833,6 +2259,7 @@ function tick() {
   const dt = Math.min(0.05, clock.getDelta());
   updatePlayer(dt);
   updateAtan(dt);
+  updateCooking(dt);
   updateAnims(dt);
   updateChat(dt);
   updateBubbles();
@@ -1896,6 +2323,72 @@ function runShot() {
     hideHint();
   } else if (shot === 'music') {
     // hall as arrived, mute stays on ♪
+  } else if (shot === 'cook' || shot === 'perfect' || shot === 'burnt') {
+    const table = tables[1] || tables[0];
+    const seat = table.userData.seats.find((s) => !s.occupied) || table.userData.seats[0];
+    if (seat && !seat.occupied) setSeated(true, seat);
+    hideHint();
+    // A dinner companion across the grill, only for these stills — not in the live camera path.
+    const across = table.userData.seats[2];
+    let shotBuddy = null;
+    if (across && !across.occupied) {
+      shotBuddy = makePerson({ shirtColor: 0x7a5a48, pantsColor: 0x2c2824 });
+      scene.add(shotBuddy);
+      sitCharacter(shotBuddy, across);
+      npcs.push(shotBuddy);
+    }
+    const gp = seat.grill.getWorldPosition(new THREE.Vector3());
+    camera.position.set(gp.x + 0.02, gp.y + 0.74, gp.z + 1.48);
+    camera.lookAt(gp.x, gp.y + 0.08, gp.z - 0.02);
+    state.shotCam = true;
+    const grill = seat.grill;
+    const put = (specs) => {
+      for (const spec of specs) {
+        const s = makeSkewer(spec.style, false);
+        s.userData.owner = 'player';
+        s.userData.doneness = [spec.d0, spec.d1];
+        s.userData.announcedPerfect = true;
+        s.userData.announcedBurnt = true;
+        if (spec.flip) s.rotation.x = Math.PI;
+        applyCookVisual(s, true);
+        grill.add(s);
+        grill.userData.skewers.push(s);
+      }
+      layoutSkewers(grill);
+    };
+    state.cookPaused = true;
+    state.cookTipShown = true;
+    if (shot === 'cook') {
+      put([
+        { style: 'beef-big', d0: 0.56, d1: 0.10 },
+        { style: 'chicken', d0: 0.30, d1: 0.08 },
+        { style: 'lamb', d0: 0.48, d1: 0.16 },
+        { style: 'potato', d0: 0.36, d1: 0.10 },
+        { style: 'fatty', d0: 0.22, d1: 0.05 },
+        { style: 'shrimp', d0: 0.42, d1: 0.14 },
+      ]);
+      showHint('该翻了', false, 8000);
+    } else if (shot === 'perfect') {
+      put([
+        { style: 'beef-big', d0: 0.56, d1: 0.52 },
+        { style: 'lamb', d0: 0.64, d1: 0.58 },
+        { style: 'chicken', d0: 0.50, d1: 0.48 },
+        { style: 'fatty', d0: 0.58, d1: 0.50 },
+        { style: 'potato', d0: 0.46, d1: 0.44 },
+      ]);
+      const buddy = shotBuddy || tableNeighbor(seat) || npcs[0];
+      if (buddy) say(buddy, '火候刚好', 20, buddy === atan);
+    } else if (shot === 'burnt') {
+      put([
+        { style: 'beef-big', d0: 1.08, d1: 0.28 },
+        { style: 'chicken', d0: 1.00, d1: 0.92 },
+        { style: 'potato', d0: 1.12, d1: 0.22 },
+        { style: 'lamb', d0: 0.96, d1: 0.88 },
+        { style: 'shrimp', d0: 1.02, d1: 0.48 },
+      ]);
+      const buddy = shotBuddy || tableNeighbor(seat) || npcs[0];
+      if (buddy) say(buddy, '糊了，再点两串吧', 20, buddy === atan);
+    }
   }
 }
 
@@ -1912,4 +2405,27 @@ if (shot) {
 requestAnimationFrame(tick);
 addEventListener('pointerdown', unlockAudio, { once: false });
 
-window.__yunshang = { state, tables, npcs, atan, player, openMenu, closeMenu, say, startManager, cart, sendTalk, findChatPartner, composeReply };
+window.__yunshang = {
+  state, tables, npcs, atan, player, openMenu, closeMenu, setSeated, say, startManager, cart,
+  sendTalk, findChatPartner, composeReply, flipSkewers, fanGrill, serveOrder, layoutSkewers,
+  updateCooking, updateAnims,
+  makeSkewer, downIndex, skewerGrade, stageOf, applyCookVisual,
+  setCookPaused(v) { state.cookPaused = !!v; },
+  setDoneness(s, a, b) {
+    s.userData.doneness[0] = a;
+    s.userData.doneness[1] = b;
+    applyCookVisual(s, true);
+  },
+  grillReport(grill) {
+    const g = grill || (state.sittingAt && state.sittingAt.grill);
+    if (!g) return [];
+    return g.userData.skewers.map((s) => ({
+      style: s.userData.style,
+      doneness: s.userData.doneness.slice(),
+      down: downIndex(s),
+      grade: skewerGrade(s),
+      rate: s.userData.cookRate,
+      owner: s.userData.owner,
+    }));
+  },
+};

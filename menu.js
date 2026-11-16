@@ -203,3 +203,8 @@ export const GUEST_REPLIES = {
     '这炉子挺舒服。',
   ],
 };
+
+export const COOK_PERFECT_LINES = ['火候刚好', '这串正好'];
+export const COOK_BURNT_LINES = ['糊了，再点两串吧', '慢点烤，别急'];
+export const MANAGER_BURNT_LINES = ['慢点烤，别急', '糊了就再点两串', '火大了，翻一翻'];
+export const TOAST_COOK_LINES = ['来，碰一下', '这串正好，喝一口'];
