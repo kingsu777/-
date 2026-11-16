@@ -4,10 +4,16 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <meta name="format-detection" content="telephone=no" />
+  <link rel="icon" href="./assets/favicon.png" />
   <title>云上炭火摊</title>
   <style>
-    html, body { margin: 0; height: 100%; background: #e8dcc8; overflow: hidden; touch-action: none; font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif; }
+    html, body {
+      margin: 0; height: 100%; background: #2c241c; overflow: hidden;
+      touch-action: none;
+      font-family: "PingFang SC", "Noto Sans SC", "Noto Sans CJK SC", "Noto Sans CJK", "Microsoft YaHei", sans-serif;
+    }
     #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
     #ui { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
     #hint {
@@ -23,23 +29,31 @@
     #actions {
       position: absolute; left: 50%; bottom: calc(4% + env(safe-area-inset-bottom));
       transform: translateX(-50%);
-      display: none; gap: 10px; pointer-events: auto;
+      display: none; gap: 8px; pointer-events: auto;
+      flex-wrap: wrap; justify-content: center; max-width: 96vw;
     }
     #actions.show { display: flex; }
     #actions button {
       appearance: none; border: 0; background: rgba(255,248,238,.92);
-      color: #3a2e24; font-size: 15px; padding: 10px 16px; border-radius: 999px;
+      color: #3a2e24; font-size: 15px; padding: 10px 15px; border-radius: 999px;
       font-family: inherit; box-shadow: 0 2px 10px rgba(60,40,20,.12);
     }
-    #actions button:active { transform: scale(.97); }
-    #bubble {
-      position: absolute; left: 0; top: 0; transform: translate(-50%, -120%);
-      background: rgba(255,248,238,.94); color: #3a2e24;
-      padding: 10px 16px; border-radius: 16px 16px 16px 4px;
-      font-size: 16px; letter-spacing: .04em; display: none;
-      box-shadow: 0 4px 16px rgba(60,40,20,.14); pointer-events: none; white-space: nowrap;
+    #actions button[data-act="order"] {
+      background: #b04a32; color: #fff8ee;
     }
-    #bubble.show { display: block; }
+    #actions button:active { transform: scale(.97); }
+    #bubbles { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+    .speech {
+      position: absolute; left: 0; top: 0; transform: translate(-50%, -120%);
+      background: rgba(255,248,238,.95); color: #3a2e24;
+      padding: 8px 13px; border-radius: 16px 16px 16px 4px;
+      font-size: 15px; letter-spacing: .04em; line-height: 1.35;
+      box-shadow: 0 4px 16px rgba(60,40,20,.16);
+      white-space: nowrap; max-width: 78vw;
+      opacity: 0; transition: opacity .18s ease;
+    }
+    .speech.show { opacity: 1; }
+    .speech.manager { background: #fff1e4; border: 1px solid rgba(176,74,50,.28); }
     #exit {
       position: absolute; right: 14px; bottom: calc(18% + env(safe-area-inset-bottom));
       max-width: 46%; text-align: right; color: #5a4a3a;
@@ -53,6 +67,7 @@
       width: min(86vw, 340px); background: #fff8ee; color: #3a2e24;
       border-radius: 16px; padding: 22px 22px 18px; display: none;
       pointer-events: auto; box-shadow: 0 10px 40px rgba(40,24,12,.18);
+      touch-action: pan-y;
     }
     #panel.show { display: block; }
     #panel h2 { margin: 0 0 14px; font-size: 16px; font-weight: 600; letter-spacing: .08em; }
@@ -65,8 +80,85 @@
       background: rgba(255,248,238,.7); color: #3a2e24; pointer-events: auto;
       font-size: 16px; font-family: inherit;
     }
-    #fade { position: fixed; inset: 0; background: #e8dcc8; z-index: 9; opacity: 1; transition: opacity 1.2s ease; pointer-events: none; }
+    #fade { position: fixed; inset: 0; background: #2c241c; z-index: 9; opacity: 1; transition: opacity 1.2s ease; pointer-events: none; }
     #fade.off { opacity: 0; }
+
+    #menu {
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      width: min(92vw, 380px); max-height: min(78vh, 640px);
+      background: #f6ead8; color: #3a2e24;
+      border-radius: 16px; display: none;
+      pointer-events: auto; box-shadow: 0 10px 40px rgba(40,24,12,.22);
+      overflow: hidden; flex-direction: column;
+      touch-action: pan-y;
+    }
+    #menu.show { display: flex; }
+    #menu * { touch-action: pan-y; }
+    .menu-head {
+      background: #b04a32; color: #fff8ee;
+      padding: 12px 14px 10px;
+      display: flex; align-items: center; justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .menu-head h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .08em; }
+    .menu-head .menu-x {
+      border: 0; background: transparent; color: #fff8ee;
+      font-size: 13px; font-family: inherit; padding: 4px 2px;
+    }
+    .menu-tabs {
+      display: flex; overflow-x: auto; flex-shrink: 0;
+      background: #efe0cc; border-bottom: 1px solid #e4d3be;
+      -webkit-overflow-scrolling: touch;
+    }
+    .menu-tabs button {
+      appearance: none; border: 0; background: none;
+      color: #6a5a4a; font-size: 14px; font-family: inherit;
+      padding: 10px 12px; white-space: nowrap; flex-shrink: 0;
+    }
+    .menu-tabs button.active {
+      color: #b04a32; font-weight: 600;
+      box-shadow: inset 0 -2px 0 #b04a32;
+    }
+    .menu-list { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; min-height: 0; padding-bottom: 14px; }
+    .menu-item {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 10px; padding: 11px 14px;
+      border-bottom: 1px solid #ead9c4;
+    }
+    .menu-item .info { min-width: 0; }
+    .menu-item .name { font-size: 15px; font-weight: 500; }
+    .menu-item .rec {
+      display: inline-block; margin-left: 4px;
+      background: #b04a32; color: #fff8ee;
+      font-size: 10px; padding: 1px 4px; border-radius: 3px;
+      vertical-align: middle; letter-spacing: .04em;
+    }
+    .menu-item .price { color: #b04a32; font-size: 14px; margin-top: 2px; }
+    .menu-qty { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .menu-qty button {
+      width: 32px; height: 32px; border-radius: 50%; border: 0;
+      background: #b04a32; color: #fff8ee; font-size: 18px; line-height: 32px;
+      font-family: inherit; padding: 0;
+    }
+    .menu-qty button:disabled { background: #d7c4b0; color: #fff8ee; }
+    .menu-qty .n { min-width: 1.2em; text-align: center; font-size: 15px; }
+    .menu-foot {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 10px; padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+      background: #fff8ee; border-top: 1px solid #ead9c4; flex-shrink: 0;
+    }
+    .menu-sum { font-size: 14px; color: #5a4a3a; line-height: 1.45; }
+    .menu-sum strong { color: #b04a32; font-weight: 600; }
+    .menu-ok {
+      appearance: none; border: 0; background: #b04a32; color: #fff8ee;
+      font-size: 15px; padding: 10px 20px; border-radius: 999px;
+      font-family: inherit;
+    }
+    .menu-ok:disabled { background: #d7c4b0; }
+    @media (max-width: 420px) {
+      #actions button { font-size: 14px; padding: 9px 12px; }
+      .speech { font-size: 14px; padding: 7px 11px; }
+    }
   </style>
 </head>
 <body>
@@ -74,9 +166,10 @@
   <div id="fade"></div>
   <div id="ui">
     <button id="mute" aria-label="声音">♪</button>
-    <div id="bubble">先点十串，不够再加</div>
+    <div id="bubbles"></div>
     <div id="hint">点地面走过去</div>
     <div id="actions">
+      <button data-act="order">点餐</button>
       <button data-act="flip">翻串</button>
       <button data-act="fan">扇风</button>
       <button data-act="toast">碰杯</button>
@@ -88,6 +181,18 @@
       <p><span class="name">江都路店</span><br>河北区江都路5号<br>15510850900</p>
       <p>12:00–24:00</p>
       <button class="close" type="button">先这样</button>
+    </div>
+    <div id="menu" aria-hidden="true">
+      <div class="menu-head">
+        <h2>想吃点啥</h2>
+        <button class="menu-x" type="button">关了</button>
+      </div>
+      <div class="menu-tabs"></div>
+      <div class="menu-list"></div>
+      <div class="menu-foot">
+        <div class="menu-sum">还没点</div>
+        <button class="menu-ok" type="button" disabled>就这些</button>
+      </div>
     </div>
   </div>
   <script type="importmap">
